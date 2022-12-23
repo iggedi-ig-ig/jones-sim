@@ -24,7 +24,7 @@ async fn main() {
     let mut rng2 = StdRng::from_entropy();
     let mut rng3 = StdRng::from_entropy();
 
-    let temp = 2000.0;
+    let temp = 10000.0;
     let side_length = 100;
 
     let hexagonal_lattice = |i: usize, rng: &mut StdRng, distance_factor: f32| -> Vector2<f32> {
@@ -55,7 +55,7 @@ async fn main() {
 
     //let count = side_length * side_length / 4; // random
 
-    let vel = 6000.0;
+    let vel = 0.0;
 
     let margin = 0.1;
 
@@ -67,13 +67,13 @@ async fn main() {
                 let pos = hexagonal_lattice(i, &mut rng, distance_factor);
                 Atom::new(
                     pos + Vector2::repeat(margin * side_length as f32),
-                    // Vector2::new(rng2.gen::<f32>() * 2.0 - 1.0, rng2.gen::<f32>() * 2.0 - 1.0)
-                    //     * temp,
-                    if pos.y > side_length as f32 * 0.5 {
-                        Vector2::new(vel, -vel * 0.2)
-                    } else {
-                        Vector2::new(-vel, vel * 0.2)
-                    },
+                    Vector2::new(rng2.gen::<f32>() * 2.0 - 1.0, rng2.gen::<f32>() * 2.0 - 1.0).normalize()
+                        * temp,
+                    // if pos.y > side_length as f32 * 0.5 {
+                    //     Vector2::new(vel, -vel * 0.2)
+                    // } else {
+                    //     Vector2::new(-vel, vel * 0.2)
+                    // },
                     // Vector2::new(
                     //     pos.y - side_length as f32 * 0.5,
                     //     -(pos.x - side_length as f32 * 0.5),

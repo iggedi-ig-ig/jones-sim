@@ -1,0 +1,92 @@
+#version 450
+
+struct InAtom {
+    float pos_x;
+    float pos_y;
+};
+
+struct OutAtom {
+    float force_x;
+    float force_y;
+};
+
+struct Cell {
+    int count;
+    int atomIndices[16];
+};
+
+layout (binding = 0) writeonly buffer DstAtoms {
+    int size;
+    OutAtom atoms[];
+} dstAtoms;
+
+layout (binding = 1) readonly buffer SrcAtoms {
+    int size;
+    InAtom atoms[];
+} srcAtoms;
+
+layout (binding = 2) readonly buffer Cells {
+    int size;
+    Cell cells[];
+} cellBuffer;
+
+layout (push_constant) uniform Uniforms {
+    float gridCellSize;
+    int n;// per side, so total is this squared
+} uniforms;
+
+#define hash(X, Y) (X * uniforms.n + Y)
+
+float lennard_jones_normalizing(float dist_sq) {
+    const float DESIRED_RADIUS = 1.0;
+    const float SIGMA_FAC = 1.122462048309373;// 6th root of 2, the factor of the root relative to sigma
+    const float SIGMA = DESIRED_RADIUS / SIGMA_FAC;
+    const float SIGMA6 = SIGMA * SIGMA * SIGMA * SIGMA * SIGMA * SIGMA;// precomputed sigma^6
+    const float E = 0.25 * 3.0;
+
+    return max(-1e7, (((24.0 * E * SIGMA6 * (dist_sq * dist_sq * dist_sq - 2.0 * SIGMA6)) / (dist_sq * dist_sq * dist_sq * dist_sq * dist_sq * dist_sq * dist_sq))));
+}
+
+void main() {
+    // coordinate of the current cell
+    uvec2 coord = gl_GlobalInvocationID.xy;
+
+    Cell selfCell = cellBuffer.cells[hash(coord.x, coord.y)];
+
+    // y major
+    for (int x = -1; x < 1; x++) {
+        for (int y = -1; y < 1; y++) {
+            ivec2 coord = ivec2(coord) + ivec2(x, y);
+            int index = hash(coord.x, coord.y);
+
+            Cell cell = cellBuffer.cells[index];
+
+            for (int j = 0; j < selfCell.count; j++) {
+                for (int i = 0; i < cell.count; i++) {
+                    int selfIndex = cell.atomIndices[j];
+                    int otherIndex = cell.atomIndices[i];
+
+                    if (selfIndex != otherIndex) {
+                        InAtom atomA = srcAtoms.atoms[selfIndex];
+                        InAtom atomB = srcAtoms.atoms[otherIndex];
+
+                        vec2 posA = vec2(atomA.pos_x, atomA.pos_y);
+                        vec2 posB = vec2(atomB.pos_x, atomB.pos_y);
+                        vec2 diff = posB - posA;
+
+                        float distSq = dot(diff, diff);
+                        float forceMagScaled = lennard_jones_normalizing(distSq);
+
+                        vec2 force = diff * forceMagScaled;
+
+                        dstAtoms.atoms[selfIndex].force_x += force.x;
+                        dstAtoms.atoms[selfIndex].force_y += force.y;
+
+                        dstAtoms.atoms[otherIndex].force_x -= force.x;
+                        dstAtoms.atoms[otherIndex].force_y -= force.y;
+                    }
+                }
+            }
+        }
+    }
+}

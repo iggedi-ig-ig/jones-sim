@@ -8,16 +8,7 @@ use std::mem::size_of;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
-use wgpu::{
-    include_spirv, vertex_attr_array, Backends, BlendState, Buffer, BufferUsages, Color,
-    ColorTargetState, ColorWrites, CommandEncoderDescriptor, Device, DeviceDescriptor, Face,
-    Features, FragmentState, IndexFormat, Instance, Limits, LoadOp, Operations,
-    PipelineLayoutDescriptor, PowerPreference, PresentMode, PrimitiveState, PushConstantRange,
-    Queue, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline,
-    RenderPipelineDescriptor, RequestAdapterOptions, ShaderStages, Surface, SurfaceConfiguration,
-    SurfaceError, TextureUsages, TextureViewDescriptor, VertexAttribute, VertexBufferLayout,
-    VertexState, VertexStepMode,
-};
+use wgpu::{include_spirv, vertex_attr_array, Backends, BlendState, Buffer, BufferUsages, Color, ColorTargetState, ColorWrites, CommandEncoderDescriptor, Device, DeviceDescriptor, Face, Features, FragmentState, IndexFormat, Instance, Limits, LoadOp, Operations, PipelineLayoutDescriptor, PowerPreference, PresentMode, PrimitiveState, PushConstantRange, Queue, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, RequestAdapterOptions, ShaderStages, Surface, SurfaceConfiguration, SurfaceError, TextureUsages, TextureViewDescriptor, VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode, ComputePassDescriptor, ComputePipelineDescriptor, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType, StorageTextureAccess, TextureFormat, BufferBindingType};
 use winit::dpi::PhysicalSize;
 use winit::event::{
     ElementState, KeyboardInput, MouseButton, MouseScrollDelta, VirtualKeyCode, WindowEvent,
@@ -134,6 +125,7 @@ impl State {
 
         let vert_shader = device.create_shader_module(include_spirv!("../shaders/vert.spv"));
         let frag_shader = device.create_shader_module(include_spirv!("../shaders/frag.spv"));
+        let comp_shader = device.create_shader_module(include_spirv!("../shaders/comp.spv"));
 
         let rp_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: None,
@@ -180,6 +172,40 @@ impl State {
             multiview: None,
         });
 
+        let compute_bg_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor { label: None, entries: &[
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }
+        ] });
+        let compute_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[&compute_bg_layout],
+            push_constant_ranges: &[],
+        });
+        let compute_pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor {
+            label: None,
+            layout: Some(&compute_layout),
+            module: &comp_shader,
+            entry_point: "main",
+        });
+        
         let vertices: Vec<_> = std::iter::once(Vertex {
             position: [0.0, 0.0],
         })
@@ -435,6 +461,9 @@ impl State {
 
             render_pass.draw_indexed(0..self.index_count, 0, 0..self.instances.len() as u32);
         }
+        {
+            let mut compute_pass = command_encoder.begin_compute_pass(&ComputePassDescriptor { label: None });
+        }   
 
         self.queue.write_buffer(
             &self.instance_buffer,
