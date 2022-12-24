@@ -105,6 +105,8 @@ pub struct State {
     pub index_count: u32,
 
     pub push_constants: PushConstants,
+    pub compute_push_constants: ComputePushConstants,
+
     pub instances: Vec<RenderInstance>,
     pub atoms: Vec<Atom>,
 
@@ -122,7 +124,13 @@ pub enum Selection {
 impl State {
     const VERTEX_COUNT: usize = 33;
 
-    pub async fn new(window: &Window, simulation: &Simulation, atoms: &Vec<Atom>) -> Self {
+    pub async fn new(
+        window: &Window,
+        simulation: &Simulation,
+        atoms: &Vec<Atom>,
+        side_length: f32,
+        cell_size: f32,
+    ) -> Self {
         let size = window.inner_size();
 
         let instance = Instance::new(Backends::VULKAN);
@@ -284,11 +292,38 @@ impl State {
             usage: BufferUsages::COPY_SRC | BufferUsages::COPY_DST | BufferUsages::STORAGE,
         });
 
+        let n = (side_length / cell_size) as usize;
+
         // TODO: create cell buffer
-        let cells = vec![Cell {
-            count: 0,
-            atom_indices: [0; 16],
-        }];
+        let mut cells = vec![
+            Cell {
+                count: 0,
+                atom_indices: [0; 16],
+            };
+            n * n
+        ];
+
+        let mut cell_contents = vec![Vec::with_capacity(16); n * n];
+
+        atoms.iter().enumerate().for_each(|(idx, atom)| {
+            let id_x = (atom.pos.x / side_length) as usize;
+            let id_y = (atom.pos.y / side_length) as usize;
+
+            let index = id_x * n + id_y;
+            cell_contents[index].push(idx as i32);
+        });
+
+        cell_contents
+            .iter()
+            .zip(cells.iter_mut())
+            .for_each(|(content, cell)| {
+                content
+                    .iter()
+                    .take(16)
+                    .enumerate()
+                    .for_each(|(i, index)| cell.atom_indices[i] = *index)
+            });
+
         let cell_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: None,
             contents: bytemuck::cast_slice(&cells),
@@ -395,6 +430,11 @@ impl State {
             paused: Arc::new(AtomicBool::new(false)),
             rewind: None,
             history: HashMap::new(),
+
+            compute_push_constants: ComputePushConstants {
+                cell_size,
+                n: n as i32,
+            },
         }
     }
 
@@ -504,6 +544,20 @@ impl State {
     pub fn update(&mut self, tick: u64) -> f32 {
         let mut avg_energy_kinetic = 0.0;
 
+        let mut command_encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor::default());
+        {
+            let mut compute_pass =
+                command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
+
+            compute_pass.set_pipeline(&self.compute_pipeline);
+            compute_pass.set_bind_group(0, &self.compute_bg, &[]);
+            compute_pass.set_push_constants(0, bytemuck::bytes_of(&self.compute_push_constants));
+        }
+
+        self.queue.submit(Some(command_encoder.finish()));
+
         let atoms = &self.atoms;
 
         // update instance buffer
@@ -558,10 +612,6 @@ impl State {
             render_pass.set_index_buffer(self.index_buffer.slice(..), IndexFormat::Uint16);
 
             render_pass.draw_indexed(0..self.index_count, 0, 0..self.instances.len() as u32);
-        }
-        {
-            let mut compute_pass =
-                command_encoder.begin_compute_pass(&ComputePassDescriptor { label: None });
         }
 
         self.queue.write_buffer(

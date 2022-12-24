@@ -26,6 +26,7 @@ async fn main() {
 
     let temp = 10000.0;
     let side_length = 100;
+    let cell_size = 2.0;
 
     let hexagonal_lattice = |i: usize, rng: &mut StdRng, distance_factor: f32| -> Vector2<f32> {
         let n = (side_length as f32 / distance_factor).floor() as usize;
@@ -90,12 +91,19 @@ async fn main() {
                 r > side_length as f32 * 0.1 //&& r < side_length as f32 * 0.45
             }),
         side_length as f32,
-        2.0,
+        cell_size,
         margin * 2.0,
         false,
     );
 
-    let mut state = State::new(&window, &simulation, &simulation.atoms).await;
+    let mut state = State::new(
+        &window,
+        &simulation,
+        &simulation.atoms,
+        side_length as f32,
+        cell_size,
+    )
+    .await;
 
     let tick_counter = Arc::new(AtomicU64::new(0));
 
