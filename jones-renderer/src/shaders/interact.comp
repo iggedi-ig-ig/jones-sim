@@ -15,17 +15,17 @@ struct Cell {
     int atomIndices[16];
 };
 
-layout (binding = 0) writeonly buffer DstAtoms {
+layout (binding = 0) restrict buffer DstAtoms {
     int size;
     OutAtom atoms[];
 } dstAtoms;
 
-layout (binding = 1) readonly buffer SrcAtoms {
+layout (binding = 1) readonly restrict buffer SrcAtoms {
     int size;
     InAtom atoms[];
 } srcAtoms;
 
-layout (binding = 2) readonly buffer Cells {
+layout (binding = 2) readonly restrict buffer Cells {
     int size;
     Cell cells[];
 } cellBuffer;

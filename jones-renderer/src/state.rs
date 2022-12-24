@@ -8,7 +8,19 @@ use std::mem::size_of;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
-use wgpu::{include_spirv, vertex_attr_array, Backends, BlendState, Buffer, BufferUsages, Color, ColorTargetState, ColorWrites, CommandEncoderDescriptor, Device, DeviceDescriptor, Face, Features, FragmentState, IndexFormat, Instance, Limits, LoadOp, Operations, PipelineLayoutDescriptor, PowerPreference, PresentMode, PrimitiveState, PushConstantRange, Queue, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, RequestAdapterOptions, ShaderStages, Surface, SurfaceConfiguration, SurfaceError, TextureUsages, TextureViewDescriptor, VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode, ComputePassDescriptor, ComputePipelineDescriptor, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType, StorageTextureAccess, TextureFormat, BufferBindingType};
+use wgpu::{
+    include_spirv, vertex_attr_array, Backends, BindGroup, BindGroupDescriptor, BindGroupEntry,
+    BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType,
+    BlendState, Buffer, BufferBinding, BufferBindingType, BufferUsages, Color, ColorTargetState,
+    ColorWrites, CommandEncoderDescriptor, ComputePassDescriptor, ComputePipeline,
+    ComputePipelineDescriptor, Device, DeviceDescriptor, Face, Features, FragmentState,
+    IndexFormat, Instance, Limits, LoadOp, Operations, PipelineLayoutDescriptor, PowerPreference,
+    PresentMode, PrimitiveState, PushConstantRange, Queue, RenderPassColorAttachment,
+    RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, RequestAdapterOptions,
+    ShaderStages, StorageTextureAccess, Surface, SurfaceConfiguration, SurfaceError, TextureFormat,
+    TextureUsages, TextureViewDescriptor, VertexAttribute, VertexBufferLayout, VertexState,
+    VertexStepMode,
+};
 use winit::dpi::PhysicalSize;
 use winit::event::{
     ElementState, KeyboardInput, MouseButton, MouseScrollDelta, VirtualKeyCode, WindowEvent,
@@ -48,6 +60,33 @@ pub struct PushConstants {
     pos: [f32; 2],
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
+pub struct ComputePushConstants {
+    cell_size: f32,
+    n: i32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
+pub struct InAtom {
+    pos: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
+pub struct OutAtom {
+    force: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
+pub struct Cell {
+    count: i32,
+    /// can hold a maximum of 16 atoms, that should be fine though?
+    atom_indices: [i32; 16],
+}
+
 pub struct State {
     pub size: PhysicalSize<u32>,
     pub surface: Surface,
@@ -56,6 +95,8 @@ pub struct State {
     pub queue: Queue,
 
     pub render_pipeline: RenderPipeline,
+    pub compute_pipeline: ComputePipeline,
+    pub compute_bg: BindGroup,
 
     pub vertex_buffer: Buffer,
     pub instance_buffer: Buffer,
@@ -65,7 +106,7 @@ pub struct State {
 
     pub push_constants: PushConstants,
     pub instances: Vec<RenderInstance>,
-    pub stars: Arc<ArcSwap<Vec<Atom>>>,
+    pub atoms: Vec<Atom>,
 
     pub mb_held: [bool; 3],
     pub selection: Option<Selection>,
@@ -81,11 +122,7 @@ pub enum Selection {
 impl State {
     const VERTEX_COUNT: usize = 33;
 
-    pub async fn new(
-        window: &Window,
-        simulation: &Simulation,
-        stars: Arc<ArcSwap<Vec<Atom>>>,
-    ) -> Self {
+    pub async fn new(window: &Window, simulation: &Simulation, atoms: &Vec<Atom>) -> Self {
         let size = window.inner_size();
 
         let instance = Instance::new(Backends::VULKAN);
@@ -118,14 +155,15 @@ impl State {
             format: surface.get_supported_formats(&adapter)[0],
             width: size.width,
             height: size.height,
-            present_mode: PresentMode::Fifo,
+            present_mode: PresentMode::Immediate,
         };
 
         surface.configure(&device, &config);
 
         let vert_shader = device.create_shader_module(include_spirv!("../shaders/vert.spv"));
         let frag_shader = device.create_shader_module(include_spirv!("../shaders/frag.spv"));
-        let comp_shader = device.create_shader_module(include_spirv!("../shaders/comp.spv"));
+        let interact_shader =
+            device.create_shader_module(include_spirv!("../shaders/interact.spv"));
 
         let rp_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: None,
@@ -172,40 +210,110 @@ impl State {
             multiview: None,
         });
 
-        let compute_bg_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor { label: None, entries: &[
-            BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::COMPUTE,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+        let compute_bg_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            },
-            BindGroupLayoutEntry {
-                binding: 1,
-                visibility: ShaderStages::COMPUTE,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }
-        ] });
+                BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
         let compute_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &[&compute_bg_layout],
-            push_constant_ranges: &[],
+            push_constant_ranges: &[PushConstantRange {
+                stages: ShaderStages::COMPUTE,
+                range: 0..size_of::<ComputePushConstants>() as u32,
+            }],
         });
         let compute_pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor {
             label: None,
             layout: Some(&compute_layout),
-            module: &comp_shader,
+            module: &interact_shader,
             entry_point: "main",
         });
-        
+
+        let in_atoms = device.create_buffer_init(&BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::cast_slice(
+                &atoms
+                    .iter()
+                    .map(|a| InAtom {
+                        pos: [a.pos.x, a.pos.y],
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            usage: BufferUsages::COPY_SRC | BufferUsages::COPY_DST | BufferUsages::STORAGE,
+        });
+
+        let out_atoms = device.create_buffer_init(&BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::cast_slice(
+                &atoms
+                    .iter()
+                    .map(|a| OutAtom { force: [0.0; 2] })
+                    .collect::<Vec<_>>(),
+            ),
+            usage: BufferUsages::COPY_SRC | BufferUsages::COPY_DST | BufferUsages::STORAGE,
+        });
+
+        // TODO: create cell buffer
+        let cells = vec![Cell {
+            count: 0,
+            atom_indices: [0; 16],
+        }];
+        let cell_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::cast_slice(&cells),
+            usage: BufferUsages::COPY_SRC | BufferUsages::COPY_DST | BufferUsages::STORAGE,
+        });
+
+        let compute_bg = device.create_bind_group(&BindGroupDescriptor {
+            label: None,
+            layout: &compute_bg_layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: in_atoms.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: out_atoms.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: cell_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
         let vertices: Vec<_> = std::iter::once(Vertex {
             position: [0.0, 0.0],
         })
@@ -268,6 +376,8 @@ impl State {
             queue,
 
             render_pipeline,
+            compute_pipeline,
+            compute_bg,
 
             vertex_buffer,
             index_buffer,
@@ -277,7 +387,7 @@ impl State {
 
             push_constants,
             instances,
-            stars,
+            atoms: atoms.clone(),
 
             mb_held: [false; 3],
             selection: None,
@@ -392,21 +502,9 @@ impl State {
     }
 
     pub fn update(&mut self, tick: u64) -> f32 {
-        let atoms_arc = self.stars.load();
-        let atoms = if !self.paused.load(std::sync::atomic::Ordering::Relaxed) {
-            self.history.insert(tick, (**atoms_arc).clone());
-
-            while self.history.len() > 1000 {
-                let min = *self.history.keys().min().unwrap();
-                self.history.remove(&min);
-            }
-
-            &*atoms_arc
-        } else {
-            self.history.get(&self.rewind.unwrap()).unwrap()
-        };
-
         let mut avg_energy_kinetic = 0.0;
+
+        let atoms = &self.atoms;
 
         // update instance buffer
         self.instances
@@ -462,8 +560,9 @@ impl State {
             render_pass.draw_indexed(0..self.index_count, 0, 0..self.instances.len() as u32);
         }
         {
-            let mut compute_pass = command_encoder.begin_compute_pass(&ComputePassDescriptor { label: None });
-        }   
+            let mut compute_pass =
+                command_encoder.begin_compute_pass(&ComputePassDescriptor { label: None });
+        }
 
         self.queue.write_buffer(
             &self.instance_buffer,

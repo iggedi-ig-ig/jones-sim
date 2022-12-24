@@ -67,7 +67,8 @@ async fn main() {
                 let pos = hexagonal_lattice(i, &mut rng, distance_factor);
                 Atom::new(
                     pos + Vector2::repeat(margin * side_length as f32),
-                    Vector2::new(rng2.gen::<f32>() * 2.0 - 1.0, rng2.gen::<f32>() * 2.0 - 1.0).normalize()
+                    Vector2::new(rng2.gen::<f32>() * 2.0 - 1.0, rng2.gen::<f32>() * 2.0 - 1.0)
+                        .normalize()
                         * temp,
                     // if pos.y > side_length as f32 * 0.5 {
                     //     Vector2::new(vel, -vel * 0.2)
@@ -94,52 +95,50 @@ async fn main() {
         false,
     );
 
-    let stars = Arc::new(ArcSwap::from_pointee(simulation.atoms.clone()));
-
-    let mut state = State::new(&window, &simulation, stars.clone()).await;
+    let mut state = State::new(&window, &simulation, &simulation.atoms).await;
 
     let tick_counter = Arc::new(AtomicU64::new(0));
 
-    std::thread::spawn({
-        let tick_counter = tick_counter.clone();
-        let paused = state.paused.clone();
-        move || {
-            //std::thread::sleep(Duration::from_secs(5));
-
-            let mut start = Instant::now();
-            let mut tick = 0;
-            loop {
-                while paused.load(Ordering::Relaxed) {
-                    std::thread::yield_now();
-                }
-
-                // update simulation state
-
-                simulation.update();
-                tick += 1;
-                tick_counter.fetch_add(1, Ordering::Relaxed);
-
-                let now = Instant::now();
-                let e = now.duration_since(start);
-                if e > Duration::from_millis(340) {
-                    println!(
-                        "Avg step time {:.3?}, {:.0} Hz",
-                        e / tick,
-                        tick as f32 / 0.34
-                    );
-                    start = now;
-                    tick = 0;
-                }
-
-                simulation.atoms.iter_mut().for_each(|a| {
-                    let k = 0.003;
-                    a.h = a.h * (1.0 - k) + a.force.norm() * k;
-                });
-
-                stars.store(Arc::new(simulation.atoms.clone()));
-            }
-        }
-    });
+    // std::thread::spawn({
+    //     let tick_counter = tick_counter.clone();
+    //     let paused = state.paused.clone();
+    //     move || {
+    //         //std::thread::sleep(Duration::from_secs(5));
+    //
+    //         let mut start = Instant::now();
+    //         let mut tick = 0;
+    //         loop {
+    //             while paused.load(Ordering::Relaxed) {
+    //                 std::thread::yield_now();
+    //             }
+    //
+    //             // update simulation state
+    //
+    //             simulation.update();
+    //             tick += 1;
+    //             tick_counter.fetch_add(1, Ordering::Relaxed);
+    //
+    //             let now = Instant::now();
+    //             let e = now.duration_since(start);
+    //             if e > Duration::from_millis(340) {
+    //                 println!(
+    //                     "Avg step time {:.3?}, {:.0} Hz",
+    //                     e / tick,
+    //                     tick as f32 / 0.34
+    //                 );
+    //                 start = now;
+    //                 tick = 0;
+    //             }
+    //
+    //             simulation.atoms.iter_mut().for_each(|a| {
+    //                 let k = 0.003;
+    //                 a.h = a.h * (1.0 - k) + a.force.norm() * k;
+    //             });
+    //
+    //             stars.store(Arc::new(simulation.atoms.clone()));
+    //         }
+    //     }
+    // });
 
     let mut last = Instant::now();
     event_loop.run(move |event, _, control_flow| match event {
