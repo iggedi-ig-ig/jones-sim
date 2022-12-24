@@ -59,13 +59,14 @@ void main() {
             ivec2 coord = ivec2(coord) + ivec2(x, y);
             int index = hash(coord.x, coord.y);
 
-            Cell cell = cellBuffer.cells[index];
+            Cell neighborCell = cellBuffer.cells[index];
 
             for (int j = 0; j < selfCell.count; j++) {
-                for (int i = 0; i < cell.count; i++) {
-                    int selfIndex = cell.atomIndices[j];
-                    int otherIndex = cell.atomIndices[i];
+                for (int i = 0; i < neighborCell.count; i++) {
+                    int selfIndex = neighborCell.atomIndices[j];
+                    int otherIndex = neighborCell.atomIndices[i];
 
+                    // index is also unique id
                     if (selfIndex != otherIndex) {
                         InAtom atomA = srcAtoms.atoms[selfIndex];
                         InAtom atomB = srcAtoms.atoms[otherIndex];
