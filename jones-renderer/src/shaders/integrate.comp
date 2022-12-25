@@ -1,0 +1,52 @@
+#version 450
+
+struct Atom {
+    float pos_x;
+    float pos_y;
+    float vel_x;
+    float vel_y;
+    float force_x;
+    float force_y;
+};
+
+struct AtomInstance {
+    float pos_x;
+    float pos_y;
+    float _color_r;
+    float _color_g;
+    float _color_b;
+    float _radius;
+
+};
+
+layout (binding = 0) buffer GpuAtoms {
+    Atom atoms[];
+} gpuAtoms;
+
+layout (binding = 1) buffer InstanceBuffer {
+    AtomInstance atoms[];
+} instances;
+
+void main() {
+    int idx = int(gl_GlobalInvocationID.x);
+//    float vel_x = gpuAtoms.atoms[idx].vel_x + gpuAtoms.atoms[idx].force_x;
+//    float vel_y = gpuAtoms.atoms[idx].vel_y + gpuAtoms.atoms[idx].force_y;
+
+    float pos_x = gpuAtoms.atoms[idx].pos_x + 0.0 * gpuAtoms.atoms[idx].vel_x;
+    float pos_y = gpuAtoms.atoms[idx].pos_y + 0.0 * gpuAtoms.atoms[idx].vel_y;
+
+    Atom newAtom;
+//    newAtom.vel_x = vel_x;
+//    newAtom.vel_y = vel_y;
+    newAtom.pos_x = pos_x + 0.1;
+    newAtom.pos_y = pos_y + 0.1;
+    newAtom.force_x = 0.0;
+    newAtom.force_y = 0.0;
+
+    AtomInstance instance = instances.atoms[idx];
+    instance.pos_x = pos_x;
+    instance.pos_y = pos_y;
+
+    gpuAtoms.atoms[idx] = newAtom;
+    instances.atoms[idx] = instance;
+}

@@ -1,11 +1,10 @@
 #version 450
 
-struct InAtom {
+struct Atom {
     float pos_x;
     float pos_y;
-};
-
-struct OutAtom {
+    float vel_x;
+    float vel_y;
     float force_x;
     float force_y;
 };
@@ -16,17 +15,14 @@ struct Cell {
 };
 
 layout (binding = 0) restrict buffer DstAtoms {
-    int size;
-    OutAtom atoms[];
+    Atom atoms[];
 } dstAtoms;
 
 layout (binding = 1) readonly restrict buffer SrcAtoms {
-    int size;
-    InAtom atoms[];
+    Atom atoms[];
 } srcAtoms;
 
 layout (binding = 2) readonly restrict buffer Cells {
-    int size;
     Cell cells[];
 } cellBuffer;
 
@@ -68,8 +64,8 @@ void main() {
 
                     // index is also unique id
                     if (selfIndex != otherIndex) {
-                        InAtom atomA = srcAtoms.atoms[selfIndex];
-                        InAtom atomB = srcAtoms.atoms[otherIndex];
+                        Atom atomA = srcAtoms.atoms[selfIndex];
+                        Atom atomB = srcAtoms.atoms[otherIndex];
 
                         vec2 posA = vec2(atomA.pos_x, atomA.pos_y);
                         vec2 posB = vec2(atomB.pos_x, atomB.pos_y);

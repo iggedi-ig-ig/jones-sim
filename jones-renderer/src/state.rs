@@ -11,15 +11,15 @@ use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{
     include_spirv, vertex_attr_array, Backends, BindGroup, BindGroupDescriptor, BindGroupEntry,
     BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType,
-    BlendState, Buffer, BufferBinding, BufferBindingType, BufferUsages, Color, ColorTargetState,
-    ColorWrites, CommandEncoderDescriptor, ComputePassDescriptor, ComputePipeline,
-    ComputePipelineDescriptor, Device, DeviceDescriptor, Face, Features, FragmentState,
-    IndexFormat, Instance, Limits, LoadOp, Operations, PipelineLayoutDescriptor, PowerPreference,
-    PresentMode, PrimitiveState, PushConstantRange, Queue, RenderPassColorAttachment,
-    RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, RequestAdapterOptions,
-    ShaderStages, StorageTextureAccess, Surface, SurfaceConfiguration, SurfaceError, TextureFormat,
-    TextureUsages, TextureViewDescriptor, VertexAttribute, VertexBufferLayout, VertexState,
-    VertexStepMode,
+    BlendState, Buffer, BufferAddress, BufferBinding, BufferBindingType, BufferUsages, Color,
+    ColorTargetState, ColorWrites, CommandEncoderDescriptor, ComputePassDescriptor,
+    ComputePipeline, ComputePipelineDescriptor, Device, DeviceDescriptor, Face, Features,
+    FragmentState, IndexFormat, Instance, Limits, LoadOp, Operations, PipelineLayoutDescriptor,
+    PowerPreference, PresentMode, PrimitiveState, PushConstantRange, Queue,
+    RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor,
+    RequestAdapterOptions, ShaderStages, StorageTextureAccess, Surface, SurfaceConfiguration,
+    SurfaceError, TextureFormat, TextureUsages, TextureViewDescriptor, VertexAttribute,
+    VertexBufferLayout, VertexState, VertexStepMode,
 };
 use winit::dpi::PhysicalSize;
 use winit::event::{
@@ -69,13 +69,9 @@ pub struct ComputePushConstants {
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
-pub struct InAtom {
+pub struct GpuAtom {
     pos: [f32; 2],
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Zeroable, bytemuck::Pod)]
-pub struct OutAtom {
+    vel: [f32; 2],
     force: [f32; 2],
 }
 
@@ -95,20 +91,26 @@ pub struct State {
     pub queue: Queue,
 
     pub render_pipeline: RenderPipeline,
-    pub compute_pipeline: ComputePipeline,
-    pub compute_bg: BindGroup,
+    pub interact_pipeline: ComputePipeline,
+    pub integrate_pipeline: ComputePipeline,
+    pub compute_bg_interact: BindGroup,
+    pub compute_bg_integrate: BindGroup,
 
     pub vertex_buffer: Buffer,
     pub instance_buffer: Buffer,
     pub index_buffer: Buffer,
+    pub atom_buffer: Buffer,
+    pub atom_buffer_two: Buffer,
+    pub cell_buffer: Buffer,
 
     pub index_count: u32,
+    pub n_cell_side: u32,
+    pub n_atoms: u32,
 
     pub push_constants: PushConstants,
     pub compute_push_constants: ComputePushConstants,
 
     pub instances: Vec<RenderInstance>,
-    pub atoms: Vec<Atom>,
 
     pub mb_held: [bool; 3],
     pub selection: Option<Selection>,
@@ -172,6 +174,8 @@ impl State {
         let frag_shader = device.create_shader_module(include_spirv!("../shaders/frag.spv"));
         let interact_shader =
             device.create_shader_module(include_spirv!("../shaders/interact.spv"));
+        let integrate_shader =
+            device.create_shader_module(include_spirv!("../shaders/integrate.spv"));
 
         let rp_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: None,
@@ -253,6 +257,32 @@ impl State {
                 },
             ],
         });
+        let compute_bg_layout_integrate =
+            device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[
+                    BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: ShaderStages::COMPUTE,
+                        ty: BindingType::Buffer {
+                            ty: BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: ShaderStages::COMPUTE,
+                        ty: BindingType::Buffer {
+                            ty: BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
         let compute_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &[&compute_bg_layout],
@@ -261,34 +291,41 @@ impl State {
                 range: 0..size_of::<ComputePushConstants>() as u32,
             }],
         });
-        let compute_pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor {
+        let interact_pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor {
             label: None,
             layout: Some(&compute_layout),
             module: &interact_shader,
             entry_point: "main",
         });
 
-        let in_atoms = device.create_buffer_init(&BufferInitDescriptor {
+        let integrate_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: None,
-            contents: bytemuck::cast_slice(
-                &atoms
-                    .iter()
-                    .map(|a| InAtom {
-                        pos: [a.pos.x, a.pos.y],
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-            usage: BufferUsages::COPY_SRC | BufferUsages::COPY_DST | BufferUsages::STORAGE,
+            bind_group_layouts: &[&compute_bg_layout_integrate],
+            push_constant_ranges: &[],
+        });
+        let integrate_pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor {
+            label: None,
+            layout: Some(&integrate_layout),
+            module: &integrate_shader,
+            entry_point: "main",
         });
 
-        let out_atoms = device.create_buffer_init(&BufferInitDescriptor {
+        let gpu_atoms = atoms
+            .iter()
+            .map(|atom| GpuAtom {
+                pos: [atom.pos.x, atom.pos.y],
+                vel: [atom.vel.x, atom.vel.y],
+                force: [0.0; 2],
+            })
+            .collect::<Vec<_>>();
+        let atom_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: None,
-            contents: bytemuck::cast_slice(
-                &atoms
-                    .iter()
-                    .map(|a| OutAtom { force: [0.0; 2] })
-                    .collect::<Vec<_>>(),
-            ),
+            contents: bytemuck::cast_slice(&gpu_atoms),
+            usage: BufferUsages::COPY_SRC | BufferUsages::COPY_DST | BufferUsages::STORAGE,
+        });
+        let atom_buffer_two = device.create_buffer_init(&BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::cast_slice(&gpu_atoms),
             usage: BufferUsages::COPY_SRC | BufferUsages::COPY_DST | BufferUsages::STORAGE,
         });
 
@@ -321,7 +358,9 @@ impl State {
                     .iter()
                     .take(16)
                     .enumerate()
-                    .for_each(|(i, index)| cell.atom_indices[i] = *index)
+                    .for_each(|(i, index)| cell.atom_indices[i] = *index);
+
+                cell.count = content.len().min(16) as i32;
             });
 
         let cell_buffer = device.create_buffer_init(&BufferInitDescriptor {
@@ -330,17 +369,17 @@ impl State {
             usage: BufferUsages::COPY_SRC | BufferUsages::COPY_DST | BufferUsages::STORAGE,
         });
 
-        let compute_bg = device.create_bind_group(&BindGroupDescriptor {
+        let compute_bg_interact = device.create_bind_group(&BindGroupDescriptor {
             label: None,
             layout: &compute_bg_layout,
             entries: &[
                 BindGroupEntry {
                     binding: 0,
-                    resource: in_atoms.as_entire_binding(),
+                    resource: atom_buffer.as_entire_binding(),
                 },
                 BindGroupEntry {
                     binding: 1,
-                    resource: out_atoms.as_entire_binding(),
+                    resource: atom_buffer_two.as_entire_binding(),
                 },
                 BindGroupEntry {
                     binding: 2,
@@ -388,7 +427,7 @@ impl State {
         let instance_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: None,
             contents: bytemuck::cast_slice(&instances),
-            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST | BufferUsages::STORAGE,
         });
 
         let push_constants = PushConstants {
@@ -403,6 +442,21 @@ impl State {
             ],
         };
 
+        let compute_bg_integrate = device.create_bind_group(&BindGroupDescriptor {
+            label: None,
+            layout: &compute_bg_layout_integrate,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: atom_buffer.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: instance_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
         Self {
             size,
             surface,
@@ -411,18 +465,25 @@ impl State {
             queue,
 
             render_pipeline,
-            compute_pipeline,
-            compute_bg,
+            interact_pipeline,
+            integrate_pipeline,
+            compute_bg_interact,
+            compute_bg_integrate,
 
             vertex_buffer,
             index_buffer,
             instance_buffer,
+            atom_buffer,
+            atom_buffer_two,
+            cell_buffer,
 
             index_count: indices.len() as u32,
 
+            n_atoms: atoms.len() as u32,
+            n_cell_side: n as u32,
+
             push_constants,
             instances,
-            atoms: atoms.clone(),
 
             mb_held: [false; 3],
             selection: None,
@@ -548,34 +609,47 @@ impl State {
             .device
             .create_command_encoder(&CommandEncoderDescriptor::default());
         {
-            let mut compute_pass =
+            let mut interact_pass =
                 command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
 
-            compute_pass.set_pipeline(&self.compute_pipeline);
-            compute_pass.set_bind_group(0, &self.compute_bg, &[]);
-            compute_pass.set_push_constants(0, bytemuck::bytes_of(&self.compute_push_constants));
+            interact_pass.set_pipeline(&self.interact_pipeline);
+            interact_pass.set_bind_group(0, &self.compute_bg_interact, &[]);
+            interact_pass.set_push_constants(0, bytemuck::bytes_of(&self.compute_push_constants));
+            interact_pass.dispatch_workgroups(self.n_cell_side, self.n_cell_side, 1);
+        }
+        {
+            let mut integrate_pass =
+                command_encoder.begin_compute_pass(&ComputePassDescriptor::default());
+
+            integrate_pass.set_pipeline(&self.integrate_pipeline);
+            integrate_pass.set_bind_group(0, &self.compute_bg_integrate, &[]);
+            integrate_pass.dispatch_workgroups(self.n_atoms, 1, 1);
         }
 
+        command_encoder.copy_buffer_to_buffer(
+            &self.atom_buffer,
+            0,
+            &self.atom_buffer_two,
+            0,
+            (size_of::<GpuAtom>() * self.n_atoms as usize) as BufferAddress,
+        );
         self.queue.submit(Some(command_encoder.finish()));
 
-        let atoms = &self.atoms;
+        // // update instance buffer
+        // self.instances
+        //     .iter_mut()
+        //     .enumerate()
+        //     .for_each(|(i, instance)| {
+        //         // instance.position = [a.pos.x, a.pos.y];
+        //         let vis_scale = 0.01;
+        //         avg_energy_kinetic += a.vel.norm_squared();
+        //
+        //         instance.color = colormap::map(a.h * vis_scale, &colormap::TURBO);
+        //     });
+        //
+        // let temp = avg_energy_kinetic * 0.5 / atoms.len() as f32 * 2.0 / 3.0;
 
-        // update instance buffer
-        self.instances
-            .iter_mut()
-            .enumerate()
-            .for_each(|(i, instance)| {
-                let a = &atoms[i];
-                instance.position = [a.pos.x, a.pos.y];
-                let vis_scale = 0.01;
-                avg_energy_kinetic += a.vel.norm_squared();
-
-                instance.color = colormap::map(a.h * vis_scale, &colormap::TURBO);
-            });
-
-        let temp = avg_energy_kinetic * 0.5 / atoms.len() as f32 * 2.0 / 3.0;
-
-        temp
+        1.0
     }
 
     pub fn render(&mut self) -> Result<(), SurfaceError> {
@@ -614,11 +688,11 @@ impl State {
             render_pass.draw_indexed(0..self.index_count, 0, 0..self.instances.len() as u32);
         }
 
-        self.queue.write_buffer(
-            &self.instance_buffer,
-            0,
-            bytemuck::cast_slice(&self.instances),
-        );
+        // self.queue.write_buffer(
+        //     &self.instance_buffer,
+        //     0,
+        //     bytemuck::cast_slice(&self.instances),
+        // );
         self.queue.submit(Some(command_encoder.finish()));
 
         current_texture.present();
